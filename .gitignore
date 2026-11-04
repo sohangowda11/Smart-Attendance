@@ -1,0 +1,126 @@
+# ==============================================================================
+# SYNAPSE // Git Ignore Configuration
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Python & Bytecode
+# ------------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# ------------------------------------------------------------------------------
+# Databases & Local State
+# ------------------------------------------------------------------------------
+*.sqlite
+*.sqlite3
+*.db
+synapse.db
+backend/synapse.db
+
+# ------------------------------------------------------------------------------
+# Node.js & Frontend
+# ------------------------------------------------------------------------------
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ------------------------------------------------------------------------------
+# Storage, Uploads & Processed Media
+# ------------------------------------------------------------------------------
+# Ignore uploaded surveillance videos and processed CCTV outputs
+backend/storage/uploads/*.mp4
+backend/storage/uploads/*.avi
+backend/storage/uploads/*.mov
+backend/storage/uploads/*.mkv
+!backend/storage/uploads/.gitkeep
+!backend/storage/uploads/sample_classroom_cctv.mp4
+
+# Ignore generated processed videos and verification snapshots
+backend/storage/processed/*
+!backend/storage/processed/.gitkeep
+
+# Ignore generated PDF / Excel reports
+backend/storage/reports/*
+!backend/storage/reports/.gitkeep
+
+# Ignore external downloaded datasets cache
+backend/storage/sklearn_data/
+
+# ------------------------------------------------------------------------------
+# Environment Variables & Secrets
+# ------------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# ------------------------------------------------------------------------------
+# Testing & Type Checking Caches
+# ------------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.turbo/
+
+# ------------------------------------------------------------------------------
+# Operating System & IDE Files
+# ------------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+[Dd]esktop.ini
+
+# Editors
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.sublime-workspace
+*.sublime-project
+
