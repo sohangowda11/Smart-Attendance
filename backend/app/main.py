@@ -19,7 +19,8 @@ from .routers import (
     reports_router,
     notifications_router,
     audit_router,
-    settings_router
+    settings_router,
+    webcam_router
 )
 
 # Initialize database schema tables
@@ -61,6 +62,7 @@ app.include_router(reports_router, prefix=settings.API_V1_STR)
 app.include_router(notifications_router, prefix=settings.API_V1_STR)
 app.include_router(audit_router, prefix=settings.API_V1_STR)
 app.include_router(settings_router, prefix=settings.API_V1_STR)
+app.include_router(webcam_router, prefix=settings.API_V1_STR)
 
 @app.get("/")
 def root():

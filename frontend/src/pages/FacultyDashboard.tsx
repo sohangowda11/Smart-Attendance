@@ -71,11 +71,11 @@ export const FacultyDashboard: React.FC<FacultyDashboardProps> = ({ onNavigate }
 
           <div className="flex items-center gap-3">
             <button
-              onClick={() => onNavigate('/video-processing')}
+              onClick={() => onNavigate('/live-attendance')}
               className="px-5 py-2.5 bg-synapse-pink text-white font-mono text-xs uppercase font-bold tracking-wider shadow-pink-glow hover:bg-synapse-softpink transition-all flex items-center gap-2"
             >
               <Video className="w-4 h-4" />
-              <span>Record Lecture Attendance</span>
+              <span>Start Live Webcam Attendance</span>
             </button>
 
             <button

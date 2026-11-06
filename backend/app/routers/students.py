@@ -248,7 +248,7 @@ async def enroll_student_face(
     student_id: int,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    current_user = Depends(require_admin)
+    current_user = Depends(require_faculty_or_admin)
 ):
     student = db.query(Student).filter(Student.id == student_id).first()
     if not student:

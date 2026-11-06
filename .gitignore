@@ -84,6 +84,9 @@ backend/storage/reports/*
 
 # Ignore external downloaded datasets cache
 backend/storage/sklearn_data/
+backend/storage/classroom_dataset/
+runs/
+backend/runs/
 
 # ------------------------------------------------------------------------------
 # Environment Variables & Secrets

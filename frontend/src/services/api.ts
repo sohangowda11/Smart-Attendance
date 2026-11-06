@@ -180,6 +180,33 @@ export const videoApi = {
     const res = await api.get(`/video/status/${sessionId}`);
     return res.data;
   },
+  getReport: async (sessionId: number) => {
+    const res = await api.get(`/video/report/${sessionId}`);
+    return res.data;
+  },
+};
+
+export const webcamApi = {
+  startSession: async (data: { subject_id: number; classroom_id: number; timetable_id?: number }) => {
+    const res = await api.post('/webcam/start', data);
+    return res.data;
+  },
+  processFrame: async (data: { session_id: number; image_base64: string; client_timestamp?: number }) => {
+    const res = await api.post('/webcam/process-frame', data);
+    return res.data;
+  },
+  getSessionStatus: async (sessionId: number) => {
+    const res = await api.get(`/webcam/session/${sessionId}`);
+    return res.data;
+  },
+  finalizeSession: async (data: { session_id: number; confirm_absentees?: boolean }) => {
+    const res = await api.post('/webcam/finalize', data);
+    return res.data;
+  },
+  manualMark: async (data: { session_id: number; student_id: number; status?: string; reason?: string }) => {
+    const res = await api.post('/webcam/manual-mark', data);
+    return res.data;
+  },
 };
 
 export const liveApi = {

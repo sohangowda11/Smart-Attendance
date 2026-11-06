@@ -152,11 +152,50 @@ def get_processing_status(
     current_user = Depends(require_faculty_or_admin)
 ):
     if session_id in active_processing_jobs:
-        return active_processing_jobs[session_id]
+        job = active_processing_jobs[session_id]
+        if job.get("status") == "COMPLETED" and "result" in job:
+            res = job["result"]
+            return {
+                "session_id": session_id,
+                "status": "COMPLETED",
+                "progress_pct": 100.0,
+                "total_frames": res.get("total_frames", 0),
+                "detected_count": res.get("total_detected", 0),
+                "unique_tracks": res.get("unique_tracks", 0),
+                "recognized_count": res.get("total_recognized", 0),
+                "max_occupancy": res.get("max_occupancy", 0),
+                "avg_occupancy": res.get("avg_occupancy", 0.0),
+                "min_occupancy": res.get("min_occupancy", 0),
+                "frame_occupancy_timeline": res.get("frame_occupancy_timeline", []),
+                "annotated_video": res.get("annotated_video"),
+                "report_url": res.get("report_url"),
+                "result": res
+            }
+        return job
 
     session = db.query(LectureSession).filter(LectureSession.id == session_id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    # Check for saved report file
+    from ..config import REPORTS_DIR
+    import json
+    report_file = REPORTS_DIR / f"classroom_analysis_session_{session_id}.json"
+    timeline = []
+    max_occ = 0
+    avg_occ = 0.0
+    min_occ = 0
+    if report_file.exists():
+        try:
+            with open(report_file, "r") as rf:
+                rdata = json.load(rf)
+                timeline = rdata.get("timeline", [])
+                metrics = rdata.get("metrics", {})
+                max_occ = metrics.get("max_occupancy", 0)
+                avg_occ = metrics.get("avg_occupancy", 0.0)
+                min_occ = metrics.get("min_occupancy", 0)
+        except Exception as e:
+            print(f"Error reading report: {e}")
 
     return {
         "session_id": session_id,
@@ -166,6 +205,28 @@ def get_processing_status(
         "detected_count": session.total_detected,
         "unique_tracks": session.total_unique_tracks,
         "recognized_count": session.total_recognized,
-        "annotated_video": session.annotated_video_path
+        "max_occupancy": max_occ,
+        "avg_occupancy": avg_occ,
+        "min_occupancy": min_occ,
+        "frame_occupancy_timeline": timeline,
+        "annotated_video": session.annotated_video_path,
+        "report_url": f"/storage/reports/classroom_analysis_session_{session_id}.json" if report_file.exists() else None
     }
+
+@router.get("/report/{session_id}")
+def get_session_analysis_report(
+    session_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(require_faculty_or_admin)
+):
+    from ..config import REPORTS_DIR
+    import json
+    report_file = REPORTS_DIR / f"classroom_analysis_session_{session_id}.json"
+    if not report_file.exists():
+        raise HTTPException(status_code=404, detail="Report not found for this session")
+
+    with open(report_file, "r") as rf:
+        data = json.load(rf)
+    return data
+
 

@@ -5,12 +5,16 @@ import { Modal } from '../components/common/Modal';
 import {
   CheckSquare, Calendar, Filter, Search,
   Edit3, CheckCircle2, Clock, AlertCircle,
-  FileCheck, ShieldAlert, Check
+  FileCheck, ShieldAlert, Check, Camera
 } from 'lucide-react';
 import { attendanceApi } from '../services/api';
 import { LectureSession, AttendanceRecord } from '../services/types';
 
-export const AttendanceSessions: React.FC = () => {
+interface AttendanceSessionsProps {
+  onNavigate?: (path: string) => void;
+}
+
+export const AttendanceSessions: React.FC<AttendanceSessionsProps> = ({ onNavigate }) => {
   const [sessions, setSessions] = useState<LectureSession[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
   const [sessionDetail, setSessionDetail] = useState<any>(null);
@@ -112,15 +116,27 @@ export const AttendanceSessions: React.FC = () => {
             </p>
           </div>
 
-          {sessionDetail?.session.status !== 'COMPLETED' && selectedSessionId && (
-            <button
-              onClick={handleFinalize}
-              className="px-5 py-2.5 bg-synapse-pink text-white font-mono text-xs uppercase font-bold tracking-wider shadow-pink-glow hover:bg-synapse-softpink transition-all flex items-center gap-2 self-start md:self-auto"
-            >
-              <Check className="w-4 h-4" />
-              <span>Finalize & Mark Absences</span>
-            </button>
-          )}
+          <div className="flex items-center gap-3 self-start md:self-auto">
+            {onNavigate && (
+              <button
+                onClick={() => onNavigate('/live-attendance')}
+                className="px-4 py-2.5 bg-synapse-surface border border-synapse-border hover:border-synapse-pink text-white font-mono text-xs uppercase font-semibold transition-all flex items-center gap-2"
+              >
+                <Camera className="w-4 h-4 text-synapse-pink" />
+                <span>Take Live Attendance</span>
+              </button>
+            )}
+
+            {sessionDetail?.session.status !== 'COMPLETED' && selectedSessionId && (
+              <button
+                onClick={handleFinalize}
+                className="px-5 py-2.5 bg-synapse-pink text-white font-mono text-xs uppercase font-bold tracking-wider shadow-pink-glow hover:bg-synapse-softpink transition-all flex items-center gap-2"
+              >
+                <Check className="w-4 h-4" />
+                <span>Finalize & Mark Absences</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Master-Detail Layout */}

@@ -13,6 +13,7 @@ from .reports import router as reports_router
 from .notifications import router as notifications_router
 from .audit import router as audit_router
 from .settings import router as settings_router
+from .webcam import router as webcam_router
 
 __all__ = [
     "auth_router",
@@ -29,6 +30,7 @@ __all__ = [
     "reports_router",
     "notifications_router",
     "audit_router",
-    "settings_router"
+    "settings_router",
+    "webcam_router"
 ]
 

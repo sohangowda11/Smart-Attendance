@@ -1,11 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Header } from '../components/common/Header';
 import { Badge } from '../components/common/Badge';
 import { Modal } from '../components/common/Modal';
 import {
   GraduationCap, Search, Plus, Filter,
   CheckCircle2, AlertTriangle, Upload, Eye,
-  Shield, UserCheck, ArrowUpRight
+  Shield, UserCheck, ArrowUpRight,
+  Camera, RefreshCw, Check, X, RotateCcw, Sparkles
 } from 'lucide-react';
 import { studentsApi, academicApi } from '../services/api';
 import { Student, Department } from '../services/types';
@@ -44,6 +45,159 @@ export const StudentManagement: React.FC = () => {
   const [enrollLoading, setEnrollLoading] = useState(false);
   const [enrollMsg, setEnrollMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  // Biometric Enrollment State: Live Webcam vs Upload
+  const [enrollMode, setEnrollMode] = useState<'camera' | 'upload'>('camera');
+  const [enrollStream, setEnrollStream] = useState<MediaStream | null>(null);
+  const [isPhotoCaptured, setIsPhotoCaptured] = useState(false);
+  const [capturedPreview, setCapturedPreview] = useState<string | null>(null);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [qualityWarning, setQualityWarning] = useState<string | null>(null);
+  const [availableCams, setAvailableCams] = useState<MediaDeviceInfo[]>([]);
+  const [selectedEnrollCamId, setSelectedEnrollCamId] = useState<string>('');
+
+  const enrollVideoRef = useRef<HTMLVideoElement | null>(null);
+  const enrollCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    return () => {
+      stopEnrollCamera();
+    };
+  }, []);
+
+  const listEnrollCameras = async () => {
+    try {
+      if (!navigator.mediaDevices?.enumerateDevices) return;
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter((d) => d.kind === 'videoinput');
+      setAvailableCams(videoDevices);
+      if (videoDevices.length > 0 && !selectedEnrollCamId) {
+        setSelectedEnrollCamId(videoDevices[0].deviceId);
+      }
+    } catch (e) {
+      console.error('Error listing cameras:', e);
+    }
+  };
+
+  const startEnrollCamera = async (deviceId?: string) => {
+    stopEnrollCamera();
+    setCameraError(null);
+    setIsPhotoCaptured(false);
+    setCapturedPreview(null);
+    setQualityWarning(null);
+
+    try {
+      const constraints: MediaStreamConstraints = {
+        video: {
+          deviceId: deviceId ? { exact: deviceId } : undefined,
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      setEnrollStream(stream);
+
+      if (enrollVideoRef.current) {
+        enrollVideoRef.current.srcObject = stream;
+        enrollVideoRef.current.play();
+      }
+    } catch (err: any) {
+      const msg =
+        err.name === 'NotAllowedError'
+          ? 'Webcam permission denied. Please allow camera access in browser permissions.'
+          : err.name === 'NotFoundError'
+          ? 'No webcam detected on your laptop or computer.'
+          : `Webcam error: ${err.message || err.name}`;
+      setCameraError(msg);
+    }
+  };
+
+  const stopEnrollCamera = () => {
+    if (enrollStream) {
+      enrollStream.getTracks().forEach((track) => track.stop());
+      setEnrollStream(null);
+    }
+    if (enrollVideoRef.current) {
+      enrollVideoRef.current.srcObject = null;
+    }
+  };
+
+  const handleCaptureWebcamPhoto = () => {
+    if (!enrollVideoRef.current || !enrollCanvasRef.current) return;
+    const video = enrollVideoRef.current;
+    const canvas = enrollCanvasRef.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Quick lighting sanity check
+    try {
+      const imgData = ctx.getImageData(
+        Math.floor(canvas.width / 4),
+        Math.floor(canvas.height / 4),
+        Math.floor(canvas.width / 2),
+        Math.floor(canvas.height / 2)
+      );
+      let sum = 0;
+      for (let i = 0; i < imgData.data.length; i += 4) {
+        sum += (0.299 * imgData.data[i] + 0.587 * imgData.data[i + 1] + 0.114 * imgData.data[i + 2]);
+      }
+      const avgBrightness = sum / (imgData.data.length / 4);
+      if (avgBrightness < 45) {
+        setQualityWarning('Lighting is dark. Make sure the face is illuminated from the front.');
+      } else if (avgBrightness > 225) {
+        setQualityWarning('Lighting is very bright or overexposed. Adjust angle to reduce glare.');
+      } else {
+        setQualityWarning(null);
+      }
+    } catch (e) {
+      // Ignore
+    }
+
+    canvas.toBlob((blob) => {
+      if (blob) {
+        const file = new File(
+          [blob],
+          `student_enroll_${activeStudent?.id || 'new'}_${Date.now()}.jpg`,
+          { type: 'image/jpeg' }
+        );
+        setFaceFile(file);
+        setCapturedPreview(URL.createObjectURL(blob));
+        setIsPhotoCaptured(true);
+      }
+    }, 'image/jpeg', 0.95);
+  };
+
+  const handleRetakePhoto = () => {
+    setIsPhotoCaptured(false);
+    setCapturedPreview(null);
+    setFaceFile(null);
+    setQualityWarning(null);
+    if (enrollVideoRef.current && enrollStream) {
+      enrollVideoRef.current.play();
+    }
+  };
+
+  const handleSwitchEnrollMode = (mode: 'camera' | 'upload') => {
+    setEnrollMode(mode);
+    setEnrollMsg(null);
+    setQualityWarning(null);
+    if (mode === 'camera') {
+      setIsPhotoCaptured(false);
+      setCapturedPreview(null);
+      setFaceFile(null);
+      setTimeout(() => {
+        startEnrollCamera(selectedEnrollCamId);
+      }, 50);
+    } else {
+      stopEnrollCamera();
+    }
+  };
+
   useEffect(() => {
     loadData();
   }, [selectedDept, selectedSem]);
@@ -76,7 +230,7 @@ export const StudentManagement: React.FC = () => {
   const handleRegisterStudent = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await studentsApi.create(newStudent);
+      const created = await studentsApi.create(newStudent);
       setIsRegisterOpen(false);
       setNewStudent({
         usn: '',
@@ -89,6 +243,10 @@ export const StudentManagement: React.FC = () => {
         consent_status: true,
       });
       loadData();
+      // Prompt face biometric enrollment immediately upon student creation
+      if (created) {
+        handleOpenEnrollFace(created);
+      }
     } catch (err: any) {
       alert(err.response?.data?.detail || 'Failed to create student');
     }
@@ -98,8 +256,27 @@ export const StudentManagement: React.FC = () => {
     setActiveStudent(st);
     setFaceFile(null);
     setFacePreview(null);
+    setCapturedPreview(null);
+    setIsPhotoCaptured(false);
     setEnrollMsg(null);
+    setQualityWarning(null);
+    setEnrollMode('camera');
     setIsEnrollFaceOpen(true);
+    listEnrollCameras();
+    setTimeout(() => {
+      startEnrollCamera();
+    }, 100);
+  };
+
+  const handleCloseEnrollModal = () => {
+    stopEnrollCamera();
+    setIsEnrollFaceOpen(false);
+    setFaceFile(null);
+    setFacePreview(null);
+    setCapturedPreview(null);
+    setIsPhotoCaptured(false);
+    setEnrollMsg(null);
+    setQualityWarning(null);
   };
 
   const handleFaceFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -120,6 +297,7 @@ export const StudentManagement: React.FC = () => {
         type: 'success',
         text: `Face Biometrics Enrolled! Quality Score: ${(res.quality_score * 100).toFixed(1)}%`,
       });
+      stopEnrollCamera();
       loadData();
       setTimeout(() => {
         setIsEnrollFaceOpen(false);
@@ -454,68 +632,270 @@ export const StudentManagement: React.FC = () => {
       {/* Modal: Enroll Face Biometrics */}
       <Modal
         isOpen={isEnrollFaceOpen}
-        onClose={() => setIsEnrollFaceOpen(false)}
+        onClose={handleCloseEnrollModal}
         title="Biometric Face Enrollment"
         subtitle={`Generate 128-d face embedding for ${activeStudent?.full_name} (${activeStudent?.usn})`}
+        maxWidth="lg"
       >
-        <div className="space-y-6">
-          <div className="flex flex-col items-center justify-center p-6 border-2 border-dashed border-synapse-border bg-synapse-elevated">
-            {facePreview ? (
-              <div className="relative">
-                <img
-                  src={facePreview}
-                  alt="Face preview"
-                  className="w-48 h-48 object-cover border-2 border-synapse-pink"
-                />
-                <span className="absolute bottom-2 left-2 bg-black/80 px-2 py-0.5 text-[10px] font-mono text-synapse-pink font-bold">
-                  READY FOR CV ANALYSIS
-                </span>
-              </div>
-            ) : (
-              <div className="text-center">
-                <Upload className="w-10 h-10 text-synapse-pink mx-auto mb-2 animate-bounce" />
-                <p className="text-xs font-mono text-white uppercase font-bold">
-                  Upload Student Portrait Photograph
-                </p>
-                <p className="text-[11px] text-synapse-secondary mt-1">
-                  Supported formats: JPG, PNG. High frontal lighting recommended.
-                </p>
-              </div>
-            )}
-
-            <input
-              type="file"
-              accept="image/png, image/jpeg"
-              onChange={handleFaceFileChange}
-              className="mt-4 text-xs font-mono text-synapse-secondary file:mr-4 file:py-2 file:px-4 file:border-0 file:text-xs file:font-mono file:bg-synapse-pink file:text-white hover:file:bg-synapse-softpink cursor-pointer"
-            />
+        <div className="space-y-5">
+          {/* Dual-Mode Selector Tabs */}
+          <div className="flex border-b border-synapse-border">
+            <button
+              type="button"
+              onClick={() => handleSwitchEnrollMode('camera')}
+              className={`flex items-center gap-2 px-5 py-2.5 font-mono text-xs font-bold uppercase tracking-wider transition-all border-b-2 -mb-[1px] ${
+                enrollMode === 'camera'
+                  ? 'border-synapse-pink text-synapse-pink bg-synapse-pink/10'
+                  : 'border-transparent text-synapse-secondary hover:text-white'
+              }`}
+            >
+              <Camera className="w-4 h-4" />
+              Capture Using Camera
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSwitchEnrollMode('upload')}
+              className={`flex items-center gap-2 px-5 py-2.5 font-mono text-xs font-bold uppercase tracking-wider transition-all border-b-2 -mb-[1px] ${
+                enrollMode === 'upload'
+                  ? 'border-synapse-pink text-synapse-pink bg-synapse-pink/10'
+                  : 'border-transparent text-synapse-secondary hover:text-white'
+              }`}
+            >
+              <Upload className="w-4 h-4" />
+              Upload Photo File
+            </button>
           </div>
 
+          {/* Camera Mode */}
+          {enrollMode === 'camera' && (
+            <div className="space-y-4">
+              {/* Camera selection & status bar */}
+              <div className="flex flex-wrap items-center justify-between gap-2 p-2 bg-synapse-elevated border border-synapse-border text-xs font-mono">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="text-white font-bold">WEBCAM INTERFACE:</span>
+                  {availableCams.length > 1 ? (
+                    <select
+                      value={selectedEnrollCamId}
+                      onChange={(e) => {
+                        setSelectedEnrollCamId(e.target.value);
+                        startEnrollCamera(e.target.value);
+                      }}
+                      className="bg-black/80 border border-synapse-border px-2 py-1 text-xs text-white font-mono focus:border-synapse-pink focus:outline-none"
+                    >
+                      {availableCams.map((cam, idx) => (
+                        <option key={cam.deviceId || idx} value={cam.deviceId}>
+                          {cam.label || `Camera ${idx + 1}`}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span className="text-synapse-secondary">Default Laptop / USB Camera</span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => startEnrollCamera(selectedEnrollCamId)}
+                  className="px-2 py-1 border border-synapse-border text-synapse-secondary hover:text-white flex items-center gap-1 text-[11px]"
+                  title="Reconnect Camera Stream"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  Restart Stream
+                </button>
+              </div>
+
+              {cameraError && (
+                <div className="p-3 bg-rose-500/10 border border-rose-500/40 text-rose-300 text-xs font-mono flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>{cameraError}</span>
+                </div>
+              )}
+
+              {/* Viewport: Live Stream vs Captured Snapshot */}
+              <div className="relative w-full aspect-video max-h-[380px] bg-black border border-synapse-border overflow-hidden flex items-center justify-center">
+                {!isPhotoCaptured ? (
+                  <>
+                    <video
+                      ref={enrollVideoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="w-full h-full object-cover"
+                    />
+                    {/* Centering Face Outline Guide */}
+                    <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
+                      <div className="w-44 h-56 border-2 border-dashed border-synapse-pink/80 rounded-full relative flex items-center justify-center shadow-[0_0_20px_rgba(255,22,139,0.25)]">
+                        {/* Crosshairs */}
+                        <div className="absolute w-6 h-[1px] bg-synapse-pink/70 top-1/2 left-0 -translate-x-full" />
+                        <div className="absolute w-6 h-[1px] bg-synapse-pink/70 top-1/2 right-0 translate-x-full" />
+                        <div className="absolute h-6 w-[1px] bg-synapse-pink/70 top-0 left-1/2 -translate-y-full" />
+                        <div className="absolute h-6 w-[1px] bg-synapse-pink/70 bottom-0 left-1/2 translate-y-full" />
+                        <span className="text-[10px] font-mono text-synapse-pink/90 bg-black/60 px-2 py-0.5 rounded tracking-wider uppercase font-bold">
+                          Align Face Here
+                        </span>
+                      </div>
+                      <div className="mt-3 bg-black/75 px-3 py-1 border border-synapse-pink/40 text-[10px] font-mono text-white tracking-widest uppercase">
+                        Center face • Look directly at camera • Keep neutral expression
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="relative w-full h-full flex items-center justify-center bg-black">
+                    {capturedPreview && (
+                      <img
+                        src={capturedPreview}
+                        alt="Captured biometric frame"
+                        className="w-full h-full object-contain"
+                      />
+                    )}
+                    <div className="absolute top-3 left-3 bg-black/85 border border-synapse-pink px-2.5 py-1 text-[11px] font-mono font-bold text-synapse-pink flex items-center gap-1.5">
+                      <Check className="w-3.5 h-3.5" />
+                      SNAPSHOT CAPTURED
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Quality Advisory if lighting issues */}
+              {qualityWarning && (
+                <div className="p-2.5 bg-amber-500/10 border border-amber-500/40 text-amber-300 text-xs font-mono flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>{qualityWarning}</span>
+                </div>
+              )}
+
+              {/* Hidden Canvas used for raster capture */}
+              <canvas ref={enrollCanvasRef} className="hidden" />
+
+              {/* Camera Actions */}
+              <div className="flex items-center justify-between pt-2">
+                <div className="text-[11px] font-mono text-synapse-secondary">
+                  {!isPhotoCaptured
+                    ? 'Press Capture once student is framed inside the guide.'
+                    : 'Inspect photo. Retake if blurry or confirm to extract 128-d biometric features.'}
+                </div>
+
+                <div className="flex items-center gap-3">
+                  {!isPhotoCaptured ? (
+                    <button
+                      type="button"
+                      onClick={handleCaptureWebcamPhoto}
+                      disabled={!!cameraError}
+                      className="px-6 py-2.5 bg-synapse-pink text-white font-mono text-xs uppercase font-bold tracking-wider hover:bg-synapse-softpink flex items-center gap-2 disabled:opacity-50"
+                    >
+                      <Camera className="w-4 h-4" />
+                      Capture Photograph
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleRetakePhoto}
+                        disabled={enrollLoading}
+                        className="px-4 py-2 border border-synapse-border text-xs font-mono uppercase text-synapse-secondary hover:text-white flex items-center gap-1.5 disabled:opacity-50"
+                      >
+                        <RotateCcw className="w-4 h-4" />
+                        Retake
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleUploadFace}
+                        disabled={enrollLoading || !faceFile}
+                        className="px-6 py-2.5 bg-synapse-yellow text-black font-mono text-xs uppercase font-bold tracking-wider hover:bg-yellow-300 flex items-center gap-2 disabled:opacity-50"
+                      >
+                        {enrollLoading ? (
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Check className="w-4 h-4" />
+                        )}
+                        {enrollLoading ? 'Extracting 128-D Embedding...' : 'Confirm & Enroll Biometrics'}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Upload File Mode */}
+          {enrollMode === 'upload' && (
+            <div className="space-y-4">
+              <div className="flex flex-col items-center justify-center p-6 border-2 border-dashed border-synapse-border bg-synapse-elevated">
+                {facePreview ? (
+                  <div className="relative">
+                    <img
+                      src={facePreview}
+                      alt="Face preview"
+                      className="w-48 h-48 object-cover border-2 border-synapse-pink"
+                    />
+                    <span className="absolute bottom-2 left-2 bg-black/80 px-2 py-0.5 text-[10px] font-mono text-synapse-pink font-bold">
+                      READY FOR CV ANALYSIS
+                    </span>
+                  </div>
+                ) : (
+                  <div className="text-center">
+                    <Upload className="w-10 h-10 text-synapse-pink mx-auto mb-2 animate-bounce" />
+                    <p className="text-xs font-mono text-white uppercase font-bold">
+                      Upload Student Portrait Photograph
+                    </p>
+                    <p className="text-[11px] text-synapse-secondary mt-1">
+                      Supported formats: JPG, PNG. High frontal lighting recommended.
+                    </p>
+                  </div>
+                )}
+
+                <input
+                  type="file"
+                  accept="image/png, image/jpeg"
+                  onChange={handleFaceFileChange}
+                  className="mt-4 text-xs font-mono text-synapse-secondary file:mr-4 file:py-2 file:px-4 file:border-0 file:text-xs file:font-mono file:bg-synapse-pink file:text-white hover:file:bg-synapse-softpink cursor-pointer"
+                />
+              </div>
+
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={handleUploadFace}
+                  disabled={!faceFile || enrollLoading}
+                  className="px-6 py-2.5 bg-synapse-pink text-white font-mono text-xs uppercase font-bold tracking-wider hover:bg-synapse-softpink disabled:opacity-50 flex items-center gap-2"
+                >
+                  {enrollLoading ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Sparkles className="w-4 h-4" />
+                  )}
+                  {enrollLoading ? 'Processing Biometrics...' : 'Extract & Store Embedding'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Enrollment Feedback Message */}
           {enrollMsg && (
             <div
-              className={`p-3 text-xs font-mono border ${
+              className={`p-3 text-xs font-mono border flex items-center gap-2 ${
                 enrollMsg.type === 'success'
                   ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-400'
                   : 'bg-rose-500/10 border-rose-500/40 text-rose-300'
               }`}
             >
-              {enrollMsg.text}
+              {enrollMsg.type === 'success' ? (
+                <Check className="w-4 h-4 shrink-0" />
+              ) : (
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+              )}
+              <span>{enrollMsg.text}</span>
             </div>
           )}
 
+          {/* Footer close button */}
           <div className="flex justify-end gap-3 border-t border-synapse-border pt-4">
             <button
-              onClick={() => setIsEnrollFaceOpen(false)}
-              className="px-4 py-2 border border-synapse-border text-xs font-mono text-synapse-secondary hover:text-white"
+              type="button"
+              onClick={handleCloseEnrollModal}
+              className="px-4 py-2 border border-synapse-border text-xs font-mono uppercase text-synapse-secondary hover:text-white"
             >
               Close
-            </button>
-            <button
-              onClick={handleUploadFace}
-              disabled={!faceFile || enrollLoading}
-              className="px-6 py-2 bg-synapse-pink text-white font-mono text-xs uppercase font-bold tracking-wider hover:bg-synapse-softpink disabled:opacity-50"
-            >
-              {enrollLoading ? 'Processing Biometrics...' : 'Extract & Store Embedding'}
             </button>
           </div>
         </div>

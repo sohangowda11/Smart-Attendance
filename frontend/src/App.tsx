@@ -12,6 +12,7 @@ import { FacultyManagement } from './pages/FacultyManagement';
 import { AcademicManagement } from './pages/AcademicManagement';
 import { TimetableManagement } from './pages/TimetableManagement';
 import { VideoUploadProcessing } from './pages/VideoUploadProcessing';
+import { LiveWebcamAttendance } from './pages/LiveWebcamAttendance';
 import { LiveMonitoring } from './pages/LiveMonitoring';
 import { AttendanceSessions } from './pages/AttendanceSessions';
 import { AttendanceVerification } from './pages/AttendanceVerification';
@@ -88,9 +89,12 @@ const AppContent: React.FC = () => {
         {effectivePath === '/faculty' && <FacultyManagement />}
         {effectivePath === '/academic' && <AcademicManagement />}
         {effectivePath === '/timetable' && <TimetableManagement />}
+        {effectivePath === '/live-attendance' && <LiveWebcamAttendance />}
         {effectivePath === '/video-processing' && <VideoUploadProcessing />}
         {effectivePath === '/live' && <LiveMonitoring />}
-        {effectivePath === '/attendance' && <AttendanceSessions />}
+        {effectivePath === '/attendance' && (
+          <AttendanceSessions onNavigate={(p) => setCurrentPath(p)} />
+        )}
         {effectivePath === '/verification' && <AttendanceVerification />}
         {effectivePath === '/analytics' && <AnalyticsPage />}
         {effectivePath === '/reports' && <ReportsPage />}

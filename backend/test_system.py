@@ -1,11 +1,18 @@
+import os
+import sys
 import json
-from backend.app.database import SessionLocal
-from backend.app.models import User, Student, AttendanceRecord, LectureSession, Camera, Department
-from backend.app.services.cv_engine import cv_engine
-from backend.app.services.report_generator import report_generator
-from backend.app.auth import verify_password, create_access_token
-from backend.app.routers.timetable import get_active_lecture
-from backend.app.routers.analytics import get_admin_dashboard_stats
+
+# Ensure project root and backend dir are in sys.path
+sys.path.insert(0, os.path.abspath("."))
+sys.path.insert(0, os.path.abspath("backend"))
+
+from app.database import SessionLocal
+from app.models import User, Student, AttendanceRecord, LectureSession, Camera, Department
+from app.services.cv_engine import cv_engine
+from app.services.report_generator import report_generator
+from app.auth import verify_password, create_access_token
+from app.routers.timetable import get_active_lecture
+from app.routers.analytics import get_admin_dashboard_stats
 
 def test_all():
     db = SessionLocal()

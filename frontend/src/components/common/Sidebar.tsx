@@ -16,12 +16,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPath, onNavigate }) => 
 
   const adminNavItems = [
     { label: 'Overview', path: '/admin-dashboard', icon: LayoutDashboard },
+    { label: 'Live Webcam Attendance', path: '/live-attendance', icon: Camera, highlight: true },
     { label: 'Students', path: '/students', icon: GraduationCap },
     { label: 'Faculty', path: '/faculty', icon: Users },
     { label: 'Academic Depts', path: '/academic', icon: BookOpen },
     { label: 'Timetable', path: '/timetable', icon: Calendar },
-    { label: 'CCTV Processing', path: '/video-processing', icon: Video, highlight: true },
-    { label: 'Live CCTV Streams', path: '/live', icon: Eye, highlight: true },
+    { label: 'CCTV Processing', path: '/video-processing', icon: Video },
+    { label: 'Live CCTV Streams', path: '/live', icon: Eye },
     { label: 'Attendance Records', path: '/attendance', icon: CheckSquare },
     { label: 'Verification Centre', path: '/verification', icon: ShieldCheck },
     { label: 'Analytics & Intel', path: '/analytics', icon: BarChart3 },
@@ -33,9 +34,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPath, onNavigate }) => 
 
   const facultyNavItems = [
     { label: 'Faculty Dashboard', path: '/faculty-dashboard', icon: LayoutDashboard },
+    { label: 'Start Webcam Attendance', path: '/live-attendance', icon: Camera, highlight: true },
     { label: 'My Timetable', path: '/timetable', icon: Calendar },
-    { label: 'Start Attendance', path: '/video-processing', icon: Video, highlight: true },
-    { label: 'Live Classroom CCTV', path: '/live', icon: Eye, highlight: true },
+    { label: 'CCTV Video Upload', path: '/video-processing', icon: Video },
+    { label: 'Live Classroom CCTV', path: '/live', icon: Eye },
     { label: 'Lecture Attendance', path: '/attendance', icon: CheckSquare },
     { label: 'Verification Queue', path: '/verification', icon: ShieldCheck },
     { label: 'Student Directory', path: '/students', icon: GraduationCap },
