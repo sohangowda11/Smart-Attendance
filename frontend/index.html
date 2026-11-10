@@ -11,7 +11,34 @@
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&family=Syncopate:wght@700&display=swap" rel="stylesheet">
   </head>
   <body class="bg-synapse-jet text-synapse-white antialiased selection:bg-synapse-pink selection:text-white">
-    <div id="root"></div>
+    <div id="root">
+      <div style="min-height: 100vh; background-color: #080808; display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: 'Space Grotesk', system-ui, sans-serif; color: #ffffff;">
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 16px;">
+          <div style="width: 40px; height: 40px; border: 3px solid #FF168B; border-top-color: transparent; border-radius: 50%; animation: synapse-spin 0.8s linear infinite;"></div>
+          <div style="font-family: monospace; font-size: 13px; letter-spacing: 0.15em; color: #FFFFFF; font-weight: bold; text-transform: uppercase;">SYNAPSE PLATFORM INITIALIZING...</div>
+          <div style="font-size: 11px; color: #71717A; font-family: monospace; letter-spacing: 0.05em;">AI Computer Vision &amp; Attendance Intelligence</div>
+        </div>
+      </div>
+      <style>
+        @keyframes synapse-spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+      </style>
+    </div>
+    <script>
+      window.addEventListener('error', function(e) {
+        var root = document.getElementById('root');
+        if (root && root.innerHTML.indexOf('INITIALIZING') !== -1) {
+          root.innerHTML = '<div style="min-height:100vh;background:#080808;color:#fff;display:flex;align-items:center;justify-content:center;font-family:monospace;padding:24px;">' +
+            '<div style="max-width:540px;width:100%;background:#141414;border:1px solid #FF168B;padding:24px;border-radius:4px;box-shadow:0 0 30px rgba(255,22,139,0.2);">' +
+            '<h2 style="color:#FF168B;margin:0 0 10px 0;font-size:16px;letter-spacing:0.05em;">SYNAPSE PLATFORM INITIALIZATION</h2>' +
+            '<p style="color:#a1a1aa;font-size:12px;margin:0 0 16px 0;">' + (e.message || 'Connecting to platform services...') + '</p>' +
+            '<button onclick="location.reload()" style="background:#FF168B;color:#fff;border:none;padding:8px 18px;font-weight:bold;cursor:pointer;font-size:12px;letter-spacing:0.05em;">RELOAD APPLICATION</button>' +
+            '</div></div>';
+        }
+      });
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

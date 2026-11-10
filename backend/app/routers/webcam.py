@@ -219,3 +219,65 @@ def manual_mark_student(
         "status": data.status
     }
 
+@router.get("/diagnostic/overview")
+def get_biometric_diagnostics_overview(
+    db: Session = Depends(get_db),
+    current_user = Depends(require_faculty_or_admin)
+):
+    """
+    Developer & Faculty Diagnostic API:
+    Inspects biometric enrollment status, template count, vector dimensions,
+    norm consistency, and in-memory RAM cache status across all students.
+    Raw floating-point vectors are never exposed.
+    """
+    from ..services.biometric_service import biometric_service
+    from ..models import BiometricEnrollment
+    import json
+
+    cached_ids = set(biometric_service.cached_student_ids)
+    students = db.query(Student).order_by(Student.id.asc()).all()
+    records = []
+
+    for s in students:
+        enrollments = db.query(BiometricEnrollment).filter(BiometricEnrollment.student_id == s.id).all()
+        has_enrollment = len(enrollments) > 0
+        emb_dim = 0
+        emb_norm = 0.0
+        model_version = None
+
+        if has_enrollment and enrollments[0].embedding_data:
+            try:
+                data = json.loads(enrollments[0].embedding_data)
+                if isinstance(data, list):
+                    emb_dim = len(data)
+                    arr = np.array(data, dtype=np.float64)
+                    emb_norm = round(float(np.linalg.norm(arr)), 4)
+                model_version = enrollments[0].model_version
+            except Exception:
+                pass
+
+        records.append({
+            "student_id": s.id,
+            "full_name": s.full_name,
+            "usn": s.usn,
+            "department_id": s.department_id,
+            "semester": s.semester,
+            "section": s.section,
+            "is_active": s.is_active,
+            "has_enrollment": has_enrollment,
+            "enrollment_templates_count": len(enrollments),
+            "embedding_dimension": emb_dim,
+            "embedding_norm": emb_norm,
+            "model_version": model_version,
+            "in_memory_cache": s.id in cached_ids,
+            "photo_url": s.photo_url
+        })
+
+    return {
+        "total_students": len(students),
+        "total_active": len([s for s in students if s.is_active]),
+        "cached_active_templates_in_ram": len(biometric_service.cached_encodings),
+        "tolerance": biometric_service.default_tolerance,
+        "students": records
+    }
+

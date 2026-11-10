@@ -15,11 +15,32 @@ import { useAuth } from '../context/AuthContext';
 
 interface DetectedFace {
   bbox: [number, number, number, number]; // [x, y, w, h]
-  status: 'RECOGNIZED' | 'UNKNOWN' | 'VERIFY' | 'OTHER_CLASS';
+  status: 'RECOGNIZED' | 'UNKNOWN' | 'VERIFY' | 'OTHER_CLASS' | 'AMBIGUOUS';
   label: string;
   sub_label?: string;
   confidence: number;
   student_id?: number;
+  track_id?: string;
+}
+
+interface RenderTrack {
+  id: string;
+  student_id?: number;
+  label: string;
+  sub_label?: string;
+  confidence: number;
+  status: 'RECOGNIZED' | 'UNKNOWN' | 'VERIFY' | 'OTHER_CLASS' | 'AMBIGUOUS';
+  currX: number;
+  currY: number;
+  currW: number;
+  currH: number;
+  targetX: number;
+  targetY: number;
+  targetW: number;
+  targetH: number;
+  opacity: number;
+  targetOpacity: number;
+  lastSeen: number;
 }
 
 interface RosterStudent {
@@ -77,13 +98,26 @@ export const LiveWebcamAttendance: React.FC = () => {
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [availableDevices, setAvailableDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
-  // Orientation: False = True Camera Orientation (un-mirrored), True = Mirrored (selfie view)
-  const [isMirrored, setIsMirrored] = useState(false);
 
   // Processing Loop State
   const [isProcessingLoop, setIsProcessingLoop] = useState(false);
   const processingRef = useRef(false);
   const sendLoopRef = useRef<any>(null);
+
+  // Performance Telemetry & Mirroring State
+  const [isMirrored, setIsMirrored] = useState<boolean>(true);
+  const isMirroredRef = useRef<boolean>(true);
+  const [displayFps, setDisplayFps] = useState<number>(30);
+  const [backendLatency, setBackendLatency] = useState<number>(0);
+  const fpsCountRef = useRef<number>(0);
+  const lastFpsTimeRef = useRef<number>(performance.now());
+
+  // 60 FPS Animation & Smooth Tracking Refs
+  const animFrameRef = useRef<number | null>(null);
+  const activeTracksRef = useRef<Map<string, RenderTrack>>(new Map());
+  const captureLoopActiveRef = useRef<boolean>(false);
+  const isRequestInFlightRef = useRef<boolean>(false);
+  const captureTimeoutRef = useRef<any>(null);
 
   // Review & Finalization Modal State
   const [isFinalizeModalOpen, setIsFinalizeModalOpen] = useState(false);
@@ -96,11 +130,19 @@ export const LiveWebcamAttendance: React.FC = () => {
 
   // Load initial subjects & classrooms
   useEffect(() => {
+    isMirroredRef.current = isMirrored;
+  }, [isMirrored]);
+
+  useEffect(() => {
     loadPrerequisites();
     listCameras();
     return () => {
       stopCameraStream();
+      captureLoopActiveRef.current = false;
+      if (captureTimeoutRef.current) clearTimeout(captureTimeoutRef.current);
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
       if (sendLoopRef.current) clearInterval(sendLoopRef.current);
+      activeTracksRef.current.clear();
     };
   }, []);
 
@@ -197,6 +239,26 @@ export const LiveWebcamAttendance: React.FC = () => {
     }
   };
 
+  // Toggle Mirroring with Instant Coordinate Reconciliation
+  const toggleMirroring = () => {
+    setIsMirrored((prev) => {
+      const next = !prev;
+      isMirroredRef.current = next;
+      // Invert current track positions immediately on canvas so there is zero transition jump
+      const canvas = overlayCanvasRef.current;
+      if (canvas && canvas.width > 0) {
+        const cw = canvas.width;
+        activeTracksRef.current.forEach((track) => {
+          const newCurrX = cw - track.currX - track.currW;
+          const newTargetX = cw - track.targetX - track.targetW;
+          track.currX = newCurrX;
+          track.targetX = newTargetX;
+        });
+      }
+      return next;
+    });
+  };
+
   // Start Session Workflow
   const handleStartAttendance = async () => {
     if (!selectedSubjectId || !selectedClassroomId) {
@@ -221,7 +283,7 @@ export const LiveWebcamAttendance: React.FC = () => {
       setRecognitionLogs([]);
       setCompletedSuccess(false);
 
-      // 3. Start processing loop at ~2.5 fps (optimal for 128-d face recognition)
+      // 3. Start high-performance non-overlapping capture & 60 FPS tracking loops
       processingRef.current = true;
       setIsProcessingLoop(true);
       startFrameCaptureLoop(res.session_id);
@@ -233,174 +295,388 @@ export const LiveWebcamAttendance: React.FC = () => {
     }
   };
 
-  // Frame Capture & Recognition Loop
-  const startFrameCaptureLoop = (activeSessionId: number) => {
-    if (sendLoopRef.current) clearInterval(sendLoopRef.current);
+  // 60 FPS Animation & Smooth Bounding-Box Interpolation Loop
+  const startOverlayAnimationLoop = () => {
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
 
-    sendLoopRef.current = setInterval(async () => {
-      if (!processingRef.current || !videoRef.current || !canvasRef.current) return;
-
+    const animate = () => {
+      const canvas = overlayCanvasRef.current;
       const video = videoRef.current;
-      if (video.readyState < 2 || video.paused || video.ended) return;
 
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 480;
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-      // Get JPEG base64
-      const imageBase64 = canvas.toDataURL('image/jpeg', 0.85);
-
-      try {
-        const result = await webcamApi.processFrame({
-          session_id: activeSessionId,
-          image_base64: imageBase64,
-          client_timestamp: Date.now() / 1000,
-        });
-
-        if (result && result.metrics) {
-          setMetrics(result.metrics);
-          setActiveFaces(result.faces || []);
-
-          // Draw HUD boxes on overlay canvas
-          drawOverlayHUD(result.faces || [], canvas.width, canvas.height);
-
-          // Update newly marked students
-          if (result.newly_marked && result.newly_marked.length > 0) {
-            // Update roster state
-            setRoster((prevRoster) =>
-              prevRoster.map((st) => {
-                const mark = result.newly_marked.find((m: any) => m.student_id === st.id);
-                if (mark) {
-                  return {
-                    ...st,
-                    status: 'PRESENT',
-                    confidence: mark.confidence / 100,
-                    marked_at: mark.timestamp,
-                  };
-                }
-                return st;
-              })
-            );
-
-            // Add to activity logs
-            const newEntries: RecognitionLog[] = result.newly_marked.map((m: any) => ({
-              id: `${m.student_id}-${Date.now()}`,
-              student_name: m.full_name,
-              usn: m.usn,
-              confidence: m.confidence,
-              timestamp: m.timestamp,
-              status: 'PRESENT',
-            }));
-            setRecognitionLogs((prev) => [...newEntries, ...prev].slice(0, 30));
-          }
-        }
-      } catch (e) {
-        // Skip frame on network/busy glitch without interrupting stream
-        console.warn('Frame processing glitch:', e);
+      // Telemetry: measure real displayed FPS
+      fpsCountRef.current++;
+      const now = performance.now();
+      if (now - lastFpsTimeRef.current >= 1000) {
+        setDisplayFps(Math.round((fpsCountRef.current * 1000) / (now - lastFpsTimeRef.current)));
+        fpsCountRef.current = 0;
+        lastFpsTimeRef.current = now;
       }
-    }, 400); // 400ms = 2.5 frames per second
+
+      if (canvas && video && video.readyState >= 2) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          const vW = video.videoWidth || 640;
+          const vH = video.videoHeight || 480;
+
+          if (canvas.width !== vW || canvas.height !== vH) {
+            canvas.width = vW;
+            canvas.height = vH;
+          }
+
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+          // Exponential moving average smoothing constant (36% per 16.6ms frame = snappy, fluid glide)
+          const alpha = 0.36;
+          const tracks = activeTracksRef.current;
+          const deadTrackIds: string[] = [];
+
+          tracks.forEach((track, id) => {
+            // Smoothly interpolate position towards target box
+            track.currX += (track.targetX - track.currX) * alpha;
+            track.currY += (track.targetY - track.currY) * alpha;
+            track.currW += (track.targetW - track.currW) * alpha;
+            track.currH += (track.targetH - track.currH) * alpha;
+
+            // Stale detection decay: fade out smoothly if not detected recently
+            if (now - track.lastSeen > 480) {
+              track.targetOpacity = 0.0;
+            }
+            track.opacity += (track.targetOpacity - track.opacity) * 0.22;
+
+            if (track.opacity < 0.03 && track.targetOpacity === 0.0) {
+              deadTrackIds.push(id);
+              return;
+            }
+
+            // Render crisp, high-tech HUD box
+            renderHUDBox(ctx, track);
+          });
+
+          // Cleanup decayed tracks
+          deadTrackIds.forEach((id) => tracks.delete(id));
+        }
+      }
+
+      if (captureLoopActiveRef.current) {
+        animFrameRef.current = requestAnimationFrame(animate);
+      }
+    };
+
+    animFrameRef.current = requestAnimationFrame(animate);
   };
 
-  // Draw Futuristic Cyberpunk HUD Overlays on Canvas
-  const drawOverlayHUD = (faces: DetectedFace[], videoW: number, videoH: number) => {
-    const canvas = overlayCanvasRef.current;
-    if (!canvas) return;
+  // Render Cyberpunk HUD Box on Canvas (Reads left-to-right on mirrored face)
+  const renderHUDBox = (ctx: CanvasRenderingContext2D, track: RenderTrack) => {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, track.opacity));
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    const x = track.currX;
+    const y = track.currY;
+    const w = track.currW;
+    const h = track.currH;
 
-    canvas.width = videoW;
-    canvas.height = videoH;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // Color scheme
+    let strokeColor = '#FF168B'; // Default Hot Pink (Unknown)
+    if (track.status === 'RECOGNIZED') {
+      strokeColor = '#EFFF00'; // Electric Yellow
+    } else if (track.status === 'VERIFY' || track.status === 'AMBIGUOUS') {
+      strokeColor = '#F59E0B'; // Amber / Verification needed
+    } else if (track.status === 'OTHER_CLASS') {
+      strokeColor = '#38BDF8'; // Sky Blue
+    }
 
-    faces.forEach((face) => {
-      const [rawX, y, w, h] = face.bbox;
-      // When un-mirrored (True View, default), use rawX directly.
-      // When mirrored (selfie mode), calculate mirrored horizontal coordinate.
-      const x = isMirrored ? (videoW - rawX - w) : rawX;
+    // 1. Subtle Outer Glow and Bounding Box
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 2;
+    ctx.shadowColor = strokeColor;
+    ctx.shadowBlur = 8;
+    ctx.strokeRect(x, y, w, h);
+    ctx.shadowBlur = 0; // Reset for crisp brackets and text
 
-      // Color scheme:
-      // RECOGNIZED -> Electric Yellow (#EFFF00)
-      // UNKNOWN -> Hot Pink (#FF168B)
-      // VERIFY -> Amber/Orange
-      let strokeColor = '#FF168B';
-      let tagBg = '#101010';
-      if (face.status === 'RECOGNIZED') {
-        strokeColor = '#EFFF00';
-      } else if (face.status === 'VERIFY') {
-        strokeColor = '#F59E0B';
-      } else if (face.status === 'OTHER_CLASS') {
-        strokeColor = '#3B82F6';
+    // 2. High-Tech Corner Brackets (All 4 corners)
+    const cLen = Math.min(18, w / 4, h / 4);
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    // Top-Left
+    ctx.moveTo(x, y + cLen);
+    ctx.lineTo(x, y);
+    ctx.lineTo(x + cLen, y);
+    // Top-Right
+    ctx.moveTo(x + w - cLen, y);
+    ctx.lineTo(x + w, y);
+    ctx.lineTo(x + w, y + cLen);
+    // Bottom-Left
+    ctx.moveTo(x, y + h - cLen);
+    ctx.lineTo(x, y + h);
+    ctx.lineTo(x + cLen, y + h);
+    // Bottom-Right
+    ctx.moveTo(x + w - cLen, y + h);
+    ctx.lineTo(x + w, y + h);
+    ctx.lineTo(x + w, y + h - cLen);
+    ctx.stroke();
+
+    // 3. Crisp Identity Badge Pill
+    const confText = track.confidence > 0 ? ` [${Math.round(track.confidence)}%]` : '';
+    const mainLabel = `${track.label}${confText}`;
+
+    ctx.font = 'bold 12px "JetBrains Mono", monospace';
+    const textWidth = ctx.measureText(mainLabel).width;
+    const badgeW = textWidth + 24;
+    const badgeH = 24;
+    const badgeY = y > (badgeH + 8) ? (y - badgeH - 6) : (y + 6);
+
+    // Pill background
+    ctx.fillStyle = 'rgba(10, 10, 10, 0.92)';
+    ctx.fillRect(x, badgeY, badgeW, badgeH);
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, badgeY, badgeW, badgeH);
+
+    // Status indicator dot
+    ctx.fillStyle = strokeColor;
+    ctx.beginPath();
+    ctx.arc(x + 10, badgeY + 12, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Main Label text (always readable left-to-right)
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillText(mainLabel, x + 18, badgeY + 16);
+
+    // Secondary Tag (USN or status sub-label)
+    if (track.sub_label && track.sub_label !== 'Not Registered') {
+      ctx.font = '500 10px "JetBrains Mono", monospace';
+      const subW = ctx.measureText(track.sub_label).width + 12;
+      const subH = 18;
+      const subY = badgeY + badgeH + 2;
+      ctx.fillStyle = 'rgba(16, 16, 16, 0.90)';
+      ctx.fillRect(x, subY, subW, subH);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+      ctx.strokeRect(x, subY, subW, subH);
+      ctx.fillStyle = strokeColor;
+      ctx.fillText(track.sub_label, x + 6, subY + 13);
+    }
+
+    ctx.restore();
+  };
+
+  // Reconcile Incoming Detections with Active Tracks (Mirrored & Smoothed)
+  const reconcileDetectedFaces = (
+    detectedFaces: DetectedFace[],
+    canvasW: number,
+    canvasH: number,
+    sourceW: number,
+    sourceH: number
+  ) => {
+    const now = performance.now();
+    const scaleX = canvasW / sourceW;
+    const scaleY = canvasH / sourceH;
+    const isMirr = isMirroredRef.current;
+    const tracks = activeTracksRef.current;
+    const matchedTrackIds = new Set<string>();
+
+    detectedFaces.forEach((face, idx) => {
+      const [fx, fy, fw, fh] = face.bbox;
+
+      // Scale coordinates from 640px processing space to canvas display space
+      const unmirrX = fx * scaleX;
+      const unmirrY = fy * scaleY;
+      const boxW = fw * scaleX;
+      const boxH = fh * scaleY;
+
+      // Apply horizontal mirror formula: x_mirrored = CanvasWidth - x - width
+      const targetX = isMirr ? (canvasW - unmirrX - boxW) : unmirrX;
+      const targetY = unmirrY;
+      const targetW = boxW;
+      const targetH = boxH;
+
+      // Primary key: track_id from backend or student_id
+      let trackId = face.track_id || (face.student_id ? `st_${face.student_id}` : `face_${idx}`);
+      let matchedTrack = tracks.get(trackId);
+
+      // Fallback: match by centroid proximity if identity was updated
+      if (!matchedTrack) {
+        let bestDist = 120; // 120px max spatial proximity
+        let bestCandidateId: string | null = null;
+        const newCx = targetX + targetW / 2;
+        const newCy = targetY + targetH / 2;
+
+        tracks.forEach((cand, cId) => {
+          if (matchedTrackIds.has(cId)) return;
+          const candCx = cand.targetX + cand.targetW / 2;
+          const candCy = cand.targetY + cand.targetH / 2;
+          const d = Math.hypot(newCx - candCx, newCy - candCy);
+          if (d < bestDist) {
+            bestDist = d;
+            bestCandidateId = cId;
+          }
+        });
+
+        if (bestCandidateId) {
+          matchedTrack = tracks.get(bestCandidateId);
+          trackId = bestCandidateId;
+        }
       }
 
-      // Draw Main Box
-      ctx.strokeStyle = strokeColor;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(x, y, w, h);
-
-      // Corner Brackets
-      const cLen = Math.min(16, w / 4, h / 4);
-      ctx.lineWidth = 4;
-      // Top-Left
-      ctx.beginPath();
-      ctx.moveTo(x, y + cLen);
-      ctx.lineTo(x, y);
-      ctx.lineTo(x + cLen, y);
-      ctx.stroke();
-      // Top-Right
-      ctx.beginPath();
-      ctx.moveTo(x + w - cLen, y);
-      ctx.lineTo(x + w, y);
-      ctx.lineTo(x + w, y + cLen);
-      ctx.stroke();
-      // Bottom-Left
-      ctx.beginPath();
-      ctx.moveTo(x, y + h - cLen);
-      ctx.lineTo(x, y + h);
-      ctx.lineTo(x + cLen, y + h);
-      ctx.stroke();
-      // Bottom-Right
-      ctx.beginPath();
-      ctx.moveTo(x + w - cLen, y + h);
-      ctx.lineTo(x + w, y + h);
-      ctx.lineTo(x + w, y + h - cLen);
-      ctx.stroke();
-
-      // Badge Label Background
-      const labelText =
-        face.status === 'RECOGNIZED'
-          ? `${face.label} (${face.confidence}%)`
-          : face.status === 'VERIFY'
-          ? `${face.label}`
-          : `${face.label}`;
-
-      ctx.font = 'bold 12px monospace';
-      const textMetrics = ctx.measureText(labelText);
-      const bgW = textMetrics.width + 16;
-      const bgH = 22;
-      const badgeY = Math.max(y - bgH - 4, 4);
-
-      ctx.fillStyle = tagBg;
-      ctx.fillRect(x, badgeY, bgW, bgH);
-      ctx.strokeStyle = strokeColor;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(x, badgeY, bgW, bgH);
-
-      // Text
-      ctx.fillStyle = '#FFFFFF';
-      ctx.fillText(labelText, x + 8, badgeY + 15);
+      if (matchedTrack) {
+        // Update existing track target position and data
+        matchedTrack.targetX = targetX;
+        matchedTrack.targetY = targetY;
+        matchedTrack.targetW = targetW;
+        matchedTrack.targetH = targetH;
+        matchedTrack.label = face.label;
+        matchedTrack.sub_label = face.sub_label;
+        matchedTrack.confidence = face.confidence;
+        matchedTrack.status = face.status;
+        matchedTrack.student_id = face.student_id;
+        matchedTrack.targetOpacity = 1.0;
+        matchedTrack.lastSeen = now;
+        matchedTrackIds.add(trackId);
+      } else {
+        // Create new smoothly fading-in track
+        const newTrack: RenderTrack = {
+          id: trackId,
+          student_id: face.student_id,
+          label: face.label,
+          sub_label: face.sub_label,
+          confidence: face.confidence,
+          status: face.status,
+          currX: targetX,
+          currY: targetY,
+          currW: targetW,
+          currH: targetH,
+          targetX: targetX,
+          targetY: targetY,
+          targetW: targetW,
+          targetH: targetH,
+          opacity: 0.25,
+          targetOpacity: 1.0,
+          lastSeen: now,
+        };
+        tracks.set(trackId, newTrack);
+        matchedTrackIds.add(trackId);
+      }
     });
+
+    // Mark any tracks missing in this cycle for graceful fade out
+    tracks.forEach((track, id) => {
+      if (!matchedTrackIds.has(id)) {
+        if (now - track.lastSeen > 350) {
+          track.targetOpacity = 0.0;
+        }
+      }
+    });
+  };
+
+  // High-Performance Latest-Frame Non-Overlapping Detection Loop
+  const startFrameCaptureLoop = (activeSessionId: number) => {
+    captureLoopActiveRef.current = true;
+    isRequestInFlightRef.current = false;
+
+    // Start 60 FPS animation render loop
+    startOverlayAnimationLoop();
+
+    const runCycle = async () => {
+      if (!captureLoopActiveRef.current) return;
+
+      if (!isRequestInFlightRef.current && videoRef.current && canvasRef.current) {
+        const video = videoRef.current;
+        if (video.readyState >= 2 && !video.paused && !video.ended) {
+          isRequestInFlightRef.current = true;
+
+          const vW = video.videoWidth || 640;
+          const vH = video.videoHeight || 480;
+
+          // Capture at optimized 640px processing width (4x faster dlib HOG inference)
+          const procW = 640;
+          const procH = Math.round((vH / vW) * procW);
+
+          const canvas = canvasRef.current;
+          canvas.width = procW;
+          canvas.height = procH;
+          const ctx = canvas.getContext('2d');
+
+          if (ctx) {
+            ctx.drawImage(video, 0, 0, procW, procH);
+            const imageBase64 = canvas.toDataURL('image/jpeg', 0.75); // fast ~35KB payload
+
+            const t0 = performance.now();
+            try {
+              const result = await webcamApi.processFrame({
+                session_id: activeSessionId,
+                image_base64: imageBase64,
+                client_timestamp: Date.now() / 1000,
+              });
+
+              const roundtrip = Math.round(performance.now() - t0);
+              setBackendLatency(roundtrip);
+
+              if (result) {
+                if (result.metrics) setMetrics(result.metrics);
+                if (result.faces) {
+                  setActiveFaces(result.faces);
+                  const overlayCanvas = overlayCanvasRef.current;
+                  const dispW = overlayCanvas?.width || vW;
+                  const dispH = overlayCanvas?.height || vH;
+                  reconcileDetectedFaces(result.faces, dispW, dispH, procW, procH);
+                }
+
+                // Handle newly marked students
+                if (result.newly_marked && result.newly_marked.length > 0) {
+                  setRoster((prevRoster) =>
+                    prevRoster.map((st) => {
+                      const mark = result.newly_marked.find((m: any) => m.student_id === st.id);
+                      if (mark) {
+                        return {
+                          ...st,
+                          status: 'PRESENT',
+                          confidence: mark.confidence / 100,
+                          marked_at: mark.timestamp,
+                        };
+                      }
+                      return st;
+                    })
+                  );
+
+                  const newEntries: RecognitionLog[] = result.newly_marked.map((m: any) => ({
+                    id: `${m.student_id}-${Date.now()}`,
+                    student_name: m.full_name,
+                    usn: m.usn,
+                    confidence: m.confidence,
+                    timestamp: m.timestamp,
+                    status: 'PRESENT',
+                  }));
+                  setRecognitionLogs((prev) => [...newEntries, ...prev].slice(0, 30));
+                }
+              }
+            } catch (e) {
+              console.warn('Frame processing glitch:', e);
+            } finally {
+              isRequestInFlightRef.current = false;
+            }
+          } else {
+            isRequestInFlightRef.current = false;
+          }
+        }
+      }
+
+      // Adaptive throttle: 90ms pause before capturing the next freshest frame (prevents queue buildup)
+      if (captureLoopActiveRef.current) {
+        captureTimeoutRef.current = setTimeout(runCycle, 90);
+      }
+    };
+
+    runCycle();
   };
 
   // Stop & Review Attendance
   const handleStopAttendance = () => {
     processingRef.current = false;
     setIsProcessingLoop(false);
+    captureLoopActiveRef.current = false;
+    if (captureTimeoutRef.current) clearTimeout(captureTimeoutRef.current);
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     if (sendLoopRef.current) clearInterval(sendLoopRef.current);
+    activeTracksRef.current.clear();
     stopCameraStream();
 
     // Open review modal
@@ -700,15 +976,18 @@ export const LiveWebcamAttendance: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-3">
-                  {/* Camera Orientation Switcher */}
                   <button
                     type="button"
-                    onClick={() => setIsMirrored(!isMirrored)}
-                    className="px-2.5 py-1 bg-synapse-elevated border border-synapse-border hover:border-synapse-yellow text-[10px] font-mono text-synapse-secondary hover:text-white transition-all flex items-center gap-1.5"
-                    title="Toggle Camera Orientation: True Camera View (un-mirrored) vs Mirrored View"
+                    onClick={toggleMirroring}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 bg-synapse-elevated border transition-all text-[10px] font-mono cursor-pointer ${
+                      isMirrored
+                        ? 'border-synapse-yellow text-synapse-yellow hover:bg-synapse-yellow/10'
+                        : 'border-synapse-border text-synapse-secondary hover:text-white'
+                    }`}
+                    title="Toggle Camera Horizontal Mirroring"
                   >
-                    <FlipHorizontal className="w-3.5 h-3.5 text-synapse-yellow" />
-                    <span>{isMirrored ? 'ORIENTATION: MIRRORED' : 'ORIENTATION: TRUE VIEW'}</span>
+                    <FlipHorizontal className="w-3.5 h-3.5" />
+                    <span>{isMirrored ? 'ORIENTATION: MIRRORED (SELFIE VIEW)' : 'ORIENTATION: TRUE CAMERA (DIRECTOR)'}</span>
                   </button>
 
                   <span className="text-[11px] font-mono text-synapse-muted">
@@ -719,14 +998,15 @@ export const LiveWebcamAttendance: React.FC = () => {
 
               {/* Viewport Frame */}
               <div className="relative bg-black w-full aspect-video border border-synapse-border overflow-hidden flex items-center justify-center">
-                {/* Real HTML5 Video element with explicit orientation control */}
+                {/* Standard HTML5 Video element with mirrored or natural orientation */}
                 <video
                   ref={videoRef}
                   autoPlay
                   playsInline
                   muted
-                  className="w-full h-full object-cover transition-transform duration-200"
-                  style={{ transform: isMirrored ? 'scaleX(-1)' : 'none' }}
+                  className={`w-full h-full object-cover transition-transform duration-300 ${
+                    isMirrored ? 'scale-x-[-1]' : ''
+                  }`}
                 />
 
                 {/* Canvas Overlay for Cyberpunk HUD bounding boxes */}
@@ -751,14 +1031,28 @@ export const LiveWebcamAttendance: React.FC = () => {
                   </div>
                 )}
 
-                {/* Top Overlay Banner when live */}
+                {/* Top Overlay Banner when live with Telemetry */}
                 {isSessionActive && (
-                  <div className="absolute top-2 left-2 right-2 bg-black/80 backdrop-blur-sm border border-synapse-border px-3 py-1.5 flex items-center justify-between text-[11px] font-mono">
-                    <div className="flex items-center gap-2 text-white">
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-                      <span>LIVE HUD | FACES IN VIEW: {activeFaces.length}</span>
+                  <div className="absolute top-2 left-2 right-2 bg-black/85 backdrop-blur-md border border-synapse-border/80 px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono shadow-lg">
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-1.5 text-white font-bold">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                        <span>LIVE HUD</span>
+                      </div>
+                      <span className="text-zinc-600 hidden sm:inline">|</span>
+                      <span className="text-emerald-400 hidden sm:inline">
+                        HUD: <strong className="text-white">{displayFps} FPS</strong>
+                      </span>
+                      <span className="text-zinc-600 hidden sm:inline">|</span>
+                      <span className="text-synapse-yellow">
+                        AI: <strong className="text-white">{backendLatency > 0 ? `${backendLatency}ms` : 'Ready'}</strong>
+                      </span>
+                      <span className="text-zinc-600 hidden sm:inline">|</span>
+                      <span className="text-synapse-pink">
+                        TRACKED: <strong className="text-white">{activeFaces.length}</strong>
+                      </span>
                     </div>
-                    <div className="text-synapse-yellow font-bold">
+                    <div className="text-synapse-yellow font-bold tracking-wider">
                       VERIFIED: {metrics.attendance_marked} / {metrics.total_roster}
                     </div>
                   </div>

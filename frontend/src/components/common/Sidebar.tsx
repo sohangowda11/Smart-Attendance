@@ -3,7 +3,7 @@ import { useAuth } from '../../context/AuthContext';
 import {
   LayoutDashboard, Users, GraduationCap, BookOpen, Calendar,
   Video, Eye, CheckSquare, ShieldCheck, BarChart3, FileSpreadsheet,
-  Camera, History, Settings, Sparkles, ChevronRight
+  Camera, History, Settings, Sparkles, ChevronRight, LogOut
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -12,7 +12,7 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ currentPath, onNavigate }) => {
-  const { user, isAdmin, isFaculty } = useAuth();
+  const { user, isAdmin, isFaculty, logout } = useAuth();
 
   const adminNavItems = [
     { label: 'Overview', path: '/admin-dashboard', icon: LayoutDashboard },
@@ -122,6 +122,18 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentPath, onNavigate }) => 
           );
         })}
       </nav>
+
+      {/* Sign Out Action Button */}
+      <div className="px-3 py-2 border-t border-synapse-border/60">
+        <button
+          onClick={logout}
+          title="Sign out of SYNAPSE"
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-sm text-xs font-mono uppercase tracking-wider text-synapse-secondary hover:text-rose-400 hover:bg-rose-500/10 border border-transparent hover:border-rose-500/30 transition-all"
+        >
+          <LogOut className="w-4 h-4 text-rose-400" />
+          <span>Sign Out</span>
+        </button>
+      </div>
 
       {/* Footer System Status */}
       <div className="p-4 border-t border-synapse-border bg-synapse-surface/40">

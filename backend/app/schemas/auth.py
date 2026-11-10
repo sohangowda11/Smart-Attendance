@@ -26,10 +26,14 @@ class UserCreate(BaseModel):
 
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None
+    email: Optional[str] = None
     department_id: Optional[int] = None
     designation: Optional[str] = None
     phone: Optional[str] = None
     is_active: Optional[bool] = None
+
+class PasswordResetIn(BaseModel):
+    new_password: str
 
 class UserOut(BaseModel):
     id: int

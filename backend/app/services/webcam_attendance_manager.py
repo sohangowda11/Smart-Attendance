@@ -105,21 +105,23 @@ class WebcamAttendanceManager:
                 "marked_at": None
             }
 
-            # Check biometric enrollment
-            enrollment = db.query(BiometricEnrollment).filter(
+            # Check biometric enrollment (primary consensus & representative pose templates)
+            enrollments = db.query(BiometricEnrollment).filter(
                 BiometricEnrollment.student_id == st.id
-            ).first()
-            if enrollment and enrollment.embedding_data:
-                try:
-                    emb = json.loads(enrollment.embedding_data)
-                    enrolled_cache.append({
-                        "student_id": st.id,
-                        "full_name": st.full_name,
-                        "usn": st.usn,
-                        "embedding": emb
-                    })
-                except Exception as e:
-                    print(f"[SYNAPSE Webcam] Error decoding embedding for student {st.id}: {e}")
+            ).all()
+            for enrollment in enrollments:
+                if enrollment and enrollment.embedding_data:
+                    try:
+                        emb = json.loads(enrollment.embedding_data)
+                        if isinstance(emb, list) and len(emb) == 128:
+                            enrolled_cache.append({
+                                "student_id": st.id,
+                                "full_name": st.full_name,
+                                "usn": st.usn,
+                                "embedding": emb
+                            })
+                    except Exception as e:
+                        print(f"[SYNAPSE Webcam] Error decoding embedding for student {st.id}: {e}")
 
         # Check existing attendance records already in DB for this session
         existing_records = db.query(AttendanceRecord).filter(
@@ -268,13 +270,20 @@ class WebcamAttendanceManager:
         now = datetime.now(timezone.utc)
         time_str = now.strftime("%H:%M:%S")
 
-        # Extract faces and 128-d embeddings using cv_engine
-        raw_faces = cv_engine.extract_face_embeddings(bgr_frame)
+        t_start = time.perf_counter()
+
+        # Extract faces and 128-d embeddings using cv_engine with 0.5x scaling for sub-second speed
+        t0_fe = time.perf_counter()
+        raw_faces = cv_engine.extract_face_embeddings(bgr_frame, use_fast_scale=True)
+        t_detect_encode_ms = (time.perf_counter() - t0_fe) * 1000.0
+
         enrolled_cache = session_state["enrolled_cache"]
         roster_dict = session_state["roster"]
         
         detected_faces = []
         newly_marked = []
+        t_match_total_ms = 0.0
+        t_db_total_ms = 0.0
 
         for face_info in raw_faces:
             bbox = face_info["bbox"] # [left, top, width, height]
@@ -285,10 +294,12 @@ class WebcamAttendanceManager:
             cy = bbox[1] + bbox[3] // 2
 
             # Match against enrolled students in active class roster
+            t0_m = time.perf_counter()
             match_res = cv_engine.match_face(embedding, enrolled_cache)
+            t_match_total_ms += (time.perf_counter() - t0_m) * 1000.0
 
-            # High confidence match (dlib Euclidean distance <= 0.55 -> conf >= 0.65)
-            if match_res["matched"] and match_res["status"] == "HIGH":
+            # Match against enrolled students in active class roster (Reference methodology: Euclidean dist <= tolerance)
+            if match_res["matched"]:
                 student_id = match_res["student_id"]
                 student_info = roster_dict.get(student_id)
 
@@ -307,6 +318,7 @@ class WebcamAttendanceManager:
 
                     # Record attendance in database
                     if is_new:
+                        t0_db = time.perf_counter()
                         # Prevent duplicate attendance entries in database
                         record = db.query(AttendanceRecord).filter(
                             AttendanceRecord.session_id == session_id,
@@ -346,6 +358,7 @@ class WebcamAttendanceManager:
                             timestamp=now
                         ))
                         db.commit()
+                        t_db_total_ms += (time.perf_counter() - t0_db) * 1000.0
 
                         newly_marked.append({
                             "student_id": student_id,
@@ -361,7 +374,8 @@ class WebcamAttendanceManager:
                         "label": student_info["full_name"],
                         "sub_label": student_info["usn"],
                         "confidence": round(confidence * 100, 1),
-                        "student_id": student_id
+                        "student_id": student_id,
+                        "track_id": f"st_{student_id}"
                     })
                 else:
                     # Student enrolled in university but not enrolled in this subject's class
@@ -371,8 +385,21 @@ class WebcamAttendanceManager:
                         "label": f"{match_res['student_name']} (Other Class)",
                         "sub_label": match_res.get("student_usn", ""),
                         "confidence": round(match_res["confidence"] * 100, 1),
-                        "student_id": match_res["student_id"]
+                        "student_id": match_res["student_id"],
+                        "track_id": f"other_{match_res['student_id']}"
                     })
+
+            elif match_res["status"] == "AMBIGUOUS":
+                cand_id = match_res.get("candidate_student_id")
+                detected_faces.append({
+                    "bbox": bbox,
+                    "status": "AMBIGUOUS",
+                    "label": match_res.get("student_name", "Ambiguous Identity"),
+                    "sub_label": "Multiple Near Candidates",
+                    "confidence": 50.0,
+                    "student_id": cand_id,
+                    "track_id": f"amb_{cand_id}" if cand_id else f"amb_{frame_idx}"
+                })
 
             elif match_res["status"] == "MEDIUM" and match_res.get("candidate_student_id"):
                 # Uncertain/borderline match -> Queue for verification
@@ -386,7 +413,8 @@ class WebcamAttendanceManager:
                     "label": f"Verify: {cand_name}?",
                     "sub_label": f"Confidence: {int(match_res['confidence'] * 100)}%",
                     "confidence": round(match_res["confidence"] * 100, 1),
-                    "student_id": candidate_id
+                    "student_id": candidate_id,
+                    "track_id": f"ver_{candidate_id}"
                 })
 
             else:
@@ -398,7 +426,7 @@ class WebcamAttendanceManager:
                     "label": f"Unknown Individual #{unknown_tid}",
                     "sub_label": "Not Registered",
                     "confidence": 0.0,
-                    "track_id": unknown_tid
+                    "track_id": f"unk_{unknown_tid}"
                 })
 
         # Calculate live 5-metric classroom intelligence
@@ -409,9 +437,15 @@ class WebcamAttendanceManager:
         total_visible = recognized_count + unknown_count
         remaining_count = max(0, total_roster - recognized_count)
 
+        total_latency_ms = (time.perf_counter() - t_start) * 1000.0
+
         return {
             "session_id": session_id,
             "frame_idx": frame_idx,
+            "frame_dimensions": {
+                "width": int(bgr_frame.shape[1]),
+                "height": int(bgr_frame.shape[0])
+            },
             "faces": detected_faces,
             "active_faces_in_frame": len(detected_faces),
             "metrics": {
@@ -421,6 +455,12 @@ class WebcamAttendanceManager:
                 "unknown_individuals": unknown_count,
                 "remaining_students": remaining_count,
                 "total_roster": total_roster
+            },
+            "timing_metrics": {
+                "detection_and_encoding_ms": round(t_detect_encode_ms, 1),
+                "identity_matching_ms": round(t_match_total_ms, 2),
+                "db_persistence_ms": round(t_db_total_ms, 2),
+                "total_latency_ms": round(total_latency_ms, 1)
             },
             "newly_marked": newly_marked,
             "timestamp": time_str

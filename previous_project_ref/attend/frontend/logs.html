@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logs - Smart Attendance</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/styles.css?v=6">
+</head>
+<body>
+    <div class="bg-shape shape-1"></div>
+    <div class="bg-shape shape-2"></div>
+
+    <nav class="navbar fade-in-up">
+        <div class="logo">
+            <i class="fa-solid fa-face-smile-beam"></i> Smart Attendance
+        </div>
+        <div class="nav-links" style="display:flex; align-items:center;">
+            <button id="themeToggle" class="btn btn-secondary" style="margin-right: 1rem; border-radius:50%; width:40px;height:40px;padding:0;" onclick="toggleTheme()" title="Toggle Dark Mode">
+                <i class="fa-solid fa-moon"></i>
+            </button>
+            <a href="/">Recognition</a>
+            <a href="/dashboard">Dashboard</a>
+            <a href="/logs" class="active">History Logs</a>
+            <a href="#" onclick="handleLogout()"><i class="fa-solid fa-arrow-right-from-bracket"></i> Logout</a>
+        </div>
+    </nav>
+
+    <div class="container fade-in-up">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;">
+            <h2><i class="fa-solid fa-clock-rotate-left"></i> System Attendance History</h2>
+            <button class="btn btn-secondary" onclick="window.location.href='/api/export'">
+                <i class="fa-solid fa-download"></i> <span class="btn-text">Download Master</span>
+            </button>
+        </div>
+
+        <div class="card glass-card">
+            <div class="input-with-icon" style="margin-bottom: 1.5rem;">
+                <i class="fa-solid fa-filter"></i>
+                <input type="text" id="logFilter" placeholder="Filter logs by Name, USN, or Date (YYYY-MM-DD)..." oninput="populateLogsTable()">
+            </div>
+
+            <div class="table-container" style="max-height: 60vh; overflow-y: auto;">
+                <table id="logsTable">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Time</th>
+                            <th>Student Name</th>
+                            <th>USN</th>
+                            <th>Status Payload</th>
+                        </tr>
+                    </thead>
+                    <tbody id="logsTableBody">
+                        <tr><td colspan="5" style="text-align:center;">Loading logs...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="/static/script.js?v=6"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', fetchLogs);
+    </script>
+</body>
+</html>

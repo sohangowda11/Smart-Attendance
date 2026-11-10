@@ -17,30 +17,69 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(() => {
-    const saved = localStorage.getItem('synapse_user');
-    return saved ? JSON.parse(saved) : null;
+    try {
+      const saved = localStorage.getItem('synapse_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      localStorage.removeItem('synapse_user');
+      return null;
+    }
   });
   const [token, setToken] = useState<string | null>(() => {
-    return localStorage.getItem('synapse_token');
+    try {
+      return localStorage.getItem('synapse_token');
+    } catch {
+      return null;
+    }
   });
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState<boolean>(() => {
+    try {
+      return !!localStorage.getItem('synapse_token');
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
+    let mounted = true;
     const checkAuth = async () => {
-      const storedToken = localStorage.getItem('synapse_token');
+      let storedToken: string | null = null;
+      try {
+        storedToken = localStorage.getItem('synapse_token');
+      } catch {
+        storedToken = null;
+      }
+
       if (storedToken) {
         try {
-          const userData = await authApi.me();
-          setUser(userData);
-          localStorage.setItem('synapse_user', JSON.stringify(userData));
+          const userData = await Promise.race([
+            authApi.me(),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('Auth validation timeout')), 4000)
+            )
+          ]);
+          if (mounted) {
+            setUser(userData);
+            try {
+              localStorage.setItem('synapse_user', JSON.stringify(userData));
+            } catch {}
+          }
         } catch (err) {
-          console.error("Auth session expired", err);
-          logout();
+          console.warn("Auth session validation notice:", err);
+          if (mounted) {
+            logout();
+          }
         }
       }
-      setLoading(false);
+      if (mounted) {
+        setLoading(false);
+      }
     };
     checkAuth();
+
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   const login = async (email: string, password: string): Promise<User> => {
@@ -53,11 +92,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = () => {
-    authApi.logout().catch(() => {});
+    try {
+      authApi.logout().catch(() => {});
+    } catch (e) {
+      // Ignore
+    }
     setToken(null);
     setUser(null);
     localStorage.removeItem('synapse_token');
     localStorage.removeItem('synapse_user');
+    sessionStorage.clear();
+
+    // Release any lingering media streams across the application
+    try {
+      if (typeof window !== 'undefined' && (window as any).__synapseActiveStreams) {
+        (window as any).__synapseActiveStreams.forEach((s: MediaStream) => {
+          s.getTracks().forEach((t) => t.stop());
+        });
+        (window as any).__synapseActiveStreams = [];
+      }
+    } catch (e) {
+      // Ignore
+    }
   };
 
   const isAdmin = user?.role === 'ADMIN';

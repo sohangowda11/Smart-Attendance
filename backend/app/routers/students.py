@@ -1,6 +1,8 @@
 import os
 import json
 import shutil
+import cv2
+import numpy as np
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query
 from sqlalchemy.orm import Session
@@ -11,6 +13,8 @@ from ..schemas.student import StudentCreate, StudentUpdate, StudentOut
 from ..auth import require_faculty_or_admin, require_admin, get_current_user
 from ..config import ENROLLMENTS_DIR
 from ..services.cv_engine import cv_engine
+from ..services.biometric_enrollment_service import biometric_enrollment_service
+from ..services.biometric_service import biometric_service
 
 router = APIRouter(prefix="/students", tags=["Students"])
 
@@ -160,6 +164,7 @@ def create_student(
     db.add(student)
     db.commit()
     db.refresh(student)
+    biometric_service.refresh_cache(db)
 
     # Consent
     db.add(BiometricConsent(
@@ -211,6 +216,11 @@ def update_student(
         raise HTTPException(status_code=404, detail="Student not found")
 
     update_data = student_in.model_dump(exclude_unset=True)
+    if "usn" in update_data and update_data["usn"] != student.usn:
+        conflict = db.query(Student).filter(Student.usn == update_data["usn"], Student.id != student_id).first()
+        if conflict:
+            raise HTTPException(status_code=400, detail="Another student with this USN already exists")
+
     for k, v in update_data.items():
         setattr(student, k, v)
 
@@ -224,6 +234,7 @@ def update_student(
     ))
     db.commit()
     db.refresh(student)
+    biometric_service.refresh_cache(db)
 
     return StudentOut(
         id=student.id,
@@ -300,6 +311,7 @@ async def enroll_student_face(
         ip_address="127.0.0.1"
     ))
     db.commit()
+    biometric_service.refresh_cache(db)
 
     return {
         "message": "Student face enrolled successfully",
@@ -307,4 +319,124 @@ async def enroll_student_face(
         "photo_url": rel_path,
         "quality_score": best_face["quality_score"]
     }
+
+@router.delete("/{student_id}")
+def delete_or_deactivate_student(
+    student_id: int,
+    permanent: bool = False,
+    db: Session = Depends(get_db),
+    current_user = Depends(require_admin)
+):
+    student = db.query(Student).filter(Student.id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    att_count = db.query(AttendanceRecord).filter(AttendanceRecord.student_id == student_id).count()
+
+    if permanent:
+        if att_count > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot permanently delete student {student.usn} because {att_count} historical attendance records exist. Please deactivate instead to preserve audit logs."
+            )
+        # Safe to hard delete if no historical attendance
+        db.query(BiometricEnrollment).filter(BiometricEnrollment.student_id == student_id).delete()
+        db.query(BiometricConsent).filter(BiometricConsent.student_id == student_id).delete()
+        db.delete(student)
+        action_desc = "PERMANENTLY_DELETED"
+    else:
+        # Safe soft-deactivation (preserves all records, audit logs, and attendance)
+        student.is_active = False
+        action_desc = "DEACTIVATED"
+
+    db.add(AuditLog(
+        user_email=current_user.email,
+        action=f"STUDENT_{action_desc}",
+        entity="Student",
+        entity_id=str(student_id),
+        details=f"Student {student.full_name} ({student.usn}) was {action_desc.lower()}. Historical attendance records: {att_count} preserved.",
+        ip_address="127.0.0.1"
+    ))
+    db.commit()
+    biometric_service.refresh_cache(db)
+
+    return {
+        "message": f"Student {student.full_name} successfully {action_desc.lower()}",
+        "student_id": student_id,
+        "action": action_desc,
+        "historical_attendance_preserved": att_count
+    }
+
+@router.post("/{student_id}/enroll-multiframe")
+async def enroll_student_multiframe(
+    student_id: int,
+    files: List[UploadFile] = File(None),
+    video_file: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+    current_user = Depends(require_faculty_or_admin)
+):
+    student = db.query(Student).filter(Student.id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    frames_bgr: List[np.ndarray] = []
+
+    # 1. If image frames uploaded (sampled frames from client webcam)
+    if files:
+        for f in files:
+            ext = os.path.splitext(f.filename)[1].lower()
+            if ext in [".jpg", ".jpeg", ".png"]:
+                contents = await f.read()
+                np_arr = np.frombuffer(contents, np.uint8)
+                img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                if img is not None and img.size > 0:
+                    frames_bgr.append(img)
+
+    # 2. If short video file uploaded
+    if video_file and video_file.filename:
+        temp_video_path = ENROLLMENTS_DIR / f"temp_{student.id}_{video_file.filename}"
+        with open(temp_video_path, "wb") as buffer:
+            shutil.copyfileobj(video_file.file, buffer)
+
+        cap = cv2.VideoCapture(str(temp_video_path))
+        total_vframes = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_vframes > 0:
+            # Sample ~25 evenly spaced candidate frames across the recording
+            step = max(1, total_vframes // 25)
+            idx = 0
+            while cap.isOpened() and len(frames_bgr) < 30:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if idx % step == 0:
+                    frames_bgr.append(frame)
+                idx += 1
+        cap.release()
+        if os.path.exists(temp_video_path):
+            try:
+                os.remove(temp_video_path)
+            except Exception:
+                pass
+
+    if len(frames_bgr) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="No valid video frames received. Please allow camera access and try recording again."
+        )
+
+    try:
+        result = biometric_enrollment_service.enroll_student_from_frames(
+            student=student,
+            candidate_frames=frames_bgr,
+            db=db,
+            current_user_email=current_user.email
+        )
+        return result
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Biometric enrollment error: {str(e)}"
+        )
 

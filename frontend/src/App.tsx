@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { Sidebar } from './components/common/Sidebar';
 
@@ -27,6 +27,14 @@ const AppContent: React.FC = () => {
   const { isAuthenticated, isAdmin, isFaculty, loading } = useAuth();
   const [currentPath, setCurrentPath] = useState<string>('/');
 
+  // Sync internal state when unauthenticated so history state doesn't hold protected routes
+  // (All hooks MUST be called before any early return)
+  useEffect(() => {
+    if (!isAuthenticated && currentPath !== '/' && currentPath !== '/login') {
+      setCurrentPath('/');
+    }
+  }, [isAuthenticated, currentPath]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-synapse-jet flex items-center justify-center font-mono text-sm text-synapse-secondary">
@@ -38,15 +46,14 @@ const AppContent: React.FC = () => {
     );
   }
 
-  // If user is at root and authenticated, redirect to role dashboard
-  const effectivePath =
-    currentPath === '/' && isAuthenticated
-      ? isAdmin
-        ? '/admin-dashboard'
-        : '/faculty-dashboard'
-      : currentPath;
+  // Route Guard: If unauthenticated, only '/' (public landing) and '/login' are allowed.
+  // Any protected path automatically falls back to the public landing page.
+  // When starting the app, '/' always renders the Landing Page without auto-redirecting.
+  const effectivePath = !isAuthenticated
+    ? (currentPath === '/login' ? '/login' : '/')
+    : (currentPath === '/login' ? (isAdmin ? '/admin-dashboard' : '/faculty-dashboard') : currentPath);
 
-  // Unauthenticated landing or login view
+  // Landing page view (shown on startup for both guests and authenticated users)
   if (effectivePath === '/') {
     return (
       <LandingPage
@@ -62,8 +69,12 @@ const AppContent: React.FC = () => {
     return (
       <LoginPage
         onSuccess={() => {
-          // AuthContext will update; default path handled above
-          setCurrentPath('/admin-dashboard');
+          const saved = localStorage.getItem('synapse_user');
+          let role = 'ADMIN';
+          try {
+            if (saved) role = JSON.parse(saved).role;
+          } catch {}
+          setCurrentPath(role === 'ADMIN' ? '/admin-dashboard' : '/faculty-dashboard');
         }}
         onBackToHome={() => setCurrentPath('/')}
       />

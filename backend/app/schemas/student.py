@@ -16,6 +16,7 @@ class StudentCreate(StudentBase):
     pass
 
 class StudentUpdate(BaseModel):
+    usn: Optional[str] = None
     full_name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None

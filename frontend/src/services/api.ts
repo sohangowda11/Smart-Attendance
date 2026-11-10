@@ -10,6 +10,7 @@ const API_BASE = '/api';
 
 const api = axios.create({
   baseURL: API_BASE,
+  timeout: 10000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -70,6 +71,10 @@ export const studentsApi = {
     const res = await api.put(`/students/${id}`, data);
     return res.data;
   },
+  delete: async (id: number, permanent = false) => {
+    const res = await api.delete(`/students/${id}`, { params: { permanent } });
+    return res.data;
+  },
   enrollFace: async (id: number, file: File) => {
     const formData = new FormData();
     formData.append('file', file);
@@ -78,11 +83,25 @@ export const studentsApi = {
     });
     return res.data;
   },
+  enrollMultiFrame: async (id: number, files: File[]) => {
+    const formData = new FormData();
+    files.forEach((f) => {
+      formData.append('files', f);
+    });
+    const res = await api.post(`/students/${id}/enroll-multiframe`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return res.data;
+  },
 };
 
 export const facultyApi = {
-  getAll: async (): Promise<User[]> => {
-    const res = await api.get('/faculty');
+  getAll: async (params?: { department_id?: number; search?: string }): Promise<User[]> => {
+    const res = await api.get('/faculty', { params });
+    return res.data;
+  },
+  getDetails: async (id: number) => {
+    const res = await api.get(`/faculty/${id}`);
     return res.data;
   },
   create: async (data: any): Promise<User> => {
@@ -91,6 +110,14 @@ export const facultyApi = {
   },
   update: async (id: number, data: any): Promise<User> => {
     const res = await api.put(`/faculty/${id}`, data);
+    return res.data;
+  },
+  resetPassword: async (id: number, newPassword: string) => {
+    const res = await api.post(`/faculty/${id}/reset-password`, { new_password: newPassword });
+    return res.data;
+  },
+  delete: async (id: number, permanent = false) => {
+    const res = await api.delete(`/faculty/${id}`, { params: { permanent } });
     return res.data;
   },
 };
